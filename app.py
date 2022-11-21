@@ -1,7 +1,11 @@
 from flask import Flask
+from flask import request
+from flask import send_file
 from flask_cors import CORS
+
 import RPi.GPIO as GPIO
 
+import matplotlib.pyplot as plt
 import datetime
 import atexit
 import json
@@ -111,6 +115,97 @@ def api_toggle():
     res = lamp.changeState()
 
     return res
+
+# https://towardsdatascience.com/timestamp-parsing-with-python-ec185536bcfc
+# https://stackoverflow.com/questions/64637479/create-a-boolean-column-based-on-a-timestamp-index
+# https://www.geeksforgeeks.org/time-series-plot-or-line-plot-with-pandas/
+# https://pandas.pydata.org/docs/dev/getting_started/intro_tutorials/09_timeseries.html !!!!!!
+
+@app.route("/api/plt")
+def api_plt():
+
+    start_time = datetime.datetime.now()
+
+    day = request.args.get("day")
+    month = request.args.get("month")
+
+    if (not day) or (not month):
+        return {"status": 404, "message": "Invalid request"}
+
+    try:
+        day = int(day)
+        month = int(month)
+    except:
+        return {"status": 404, "message": "Invalid request"}
+
+    with open("data.json", "r") as file:
+        data = json.load(file)
+
+    startTimes = []
+    endTimes = []
+    y = []
+    x = []
+
+    for element in data["data"]:
+        date = datetime.datetime.fromtimestamp(element["timestamp"])
+        if date.day == day and date.month == month:
+            if element["state"]:
+                startTimes.append(date)
+            else:
+                endTimes.append(date)
+
+    i = 0
+    while i < len(startTimes):
+        time1 = startTimes[i]
+        if i < len(endTimes):
+            time2 = endTimes[i]
+        else:
+            time2 = datetime.datetime.now()
+
+        deltaTime = time2 - time1
+        deltaSeconds = deltaTime.total_seconds()
+        deltaMinutes = deltaSeconds / 60
+
+        if deltaMinutes > 60:
+            a = 0
+            while deltaMinutes > 0:
+                if not time1.hour + a > 24:
+                    x.append(time1.hour + a)
+                    if deltaMinutes < 60:
+                        y.append(deltaMinutes)
+                    else:
+                        y.append(60)
+
+                    deltaMinutes = deltaMinutes - 60
+                    a += 1
+                else:
+                    deltaMinutes = 0
+        else:
+            x.append(time1.hour)
+            y.append(deltaMinutes)
+        i += 1
+
+    if len(x) == 0 or len(y) == 0:
+        print("400: Empty plot " + str(day) + "/" + str(month))
+        return {"status": 400, "message": "Empty plot", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
+
+    plt.xlim(0, 24)
+    plt.ylim(0, 60)
+    plt.xticks([0, 6, 12, 18, 24])
+    plt.yticks([0, 15, 30, 45, 60])
+    plt.ylabel("Duration")
+    plt.xlabel("Time")
+    plt.bar(x, height=y, width=1)
+
+    plt.savefig("plt.png")
+    plt.close()
+
+    print("ok: Generated plot " + str(day) + "/" + str(month))
+    return {"status": "ok", "message": "Plot saved", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
+
+@app.route("/api/plt/img")
+def api_plt_img():
+    return send_file("plt.png")
 
 # Run function on exit
 def exit_handler():
