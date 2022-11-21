@@ -116,11 +116,6 @@ def api_toggle():
 
     return res
 
-# https://towardsdatascience.com/timestamp-parsing-with-python-ec185536bcfc
-# https://stackoverflow.com/questions/64637479/create-a-boolean-column-based-on-a-timestamp-index
-# https://www.geeksforgeeks.org/time-series-plot-or-line-plot-with-pandas/
-# https://pandas.pydata.org/docs/dev/getting_started/intro_tutorials/09_timeseries.html !!!!!!
-
 @app.route("/api/plt")
 def api_plt():
 
@@ -197,7 +192,7 @@ def api_plt():
     plt.xlabel("Time")
     plt.bar(x, height=y, width=1)
 
-    plt.savefig("plt.png")
+    plt.savefig("plt" + str(day) + str(month) + ".png")
     plt.close()
 
     print("ok: Generated plot " + str(day) + "/" + str(month))
@@ -205,7 +200,19 @@ def api_plt():
 
 @app.route("/api/plt/img")
 def api_plt_img():
-    return send_file("plt.png")
+    day = request.args.get("day")
+    month = request.args.get("month")
+
+    if (not day) or (not month):
+        return {"status": 404, "message": "Invalid request"}
+
+    try:
+        day = int(day)
+        month = int(month)
+    except:
+        return {"status": 404, "message": "Invalid request"}
+
+    return send_file("plt" + str(day) + str(month) + ".png")
 
 # Run function on exit
 def exit_handler():
