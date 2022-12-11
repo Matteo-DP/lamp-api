@@ -2,15 +2,20 @@ from flask import Flask
 from flask import request
 from flask import send_file
 from flask_cors import CORS
-
+import sqlite3
+from sqlite3 import Error
 import RPi.GPIO as GPIO
-
 import matplotlib.pyplot as plt
 import datetime
 import atexit
 import json
 
+# --------------------------------------------------------
+# INITIALISATION
+# --------------------------------------------------------
+
 app = Flask(__name__)
+# Prevents CORS errors
 CORS(app)
 
 # define the relay pin
@@ -20,30 +25,9 @@ GPIO.setmode(GPIO.BCM)
 # Set the pin mode to output
 GPIO.setup(relay_pin, GPIO.OUT)
 
-
-def logState(state):
-    try:
-        ts = datetime.datetime.now().timestamp()
-
-        with open("data.json", "r") as f:
-            data = json.load(f)
-
-        log = {
-            "timestamp": ts,
-            "state": state
-        }
-        data["data"].append(log)
-        data["entries"] = len(data["data"])
-
-        with open("data.json", "w") as f:
-            json.dump(data, f, indent=4)
-
-        print("Log " + str(ts) + " successful")
-        return { "response": "ok", "log": state, "timestamp": ts }
-
-    except:
-        print("An error has occured while logging lamp state " + str(ts))
-        return { "response": "error", "log": state, "timestamp": ts }
+# --------------------------------------------------------
+# LAMP CLASS
+# --------------------------------------------------------
 
 class Lamp():
     def __init__(self):
@@ -72,11 +56,58 @@ class Lamp():
             stateBool = False
         return { "state": stateBool, "log": self.latestLog }
 
-# Initialisation
+def sql_connection(file): 
+    # Create an SQLITE persistent connection
+    conn = None
+    try:
+        conn = sqlite3.connect(file)
+        print("[*] SQLITE Connection established -- " + sqlite3.version)
+    except Error as e:
+        print(e)
+
+    return conn
+
+def logState(state):
+        # REPLACE WITH SQL DATABASE
+        # | ON        | OFF       |
+        # | timestamp | timestamp |
+        # |-----------|-----------|
+    try:
+        ts = datetime.datetime.now().timestamp()
+        with open("data.json", "r") as f:
+            data = json.load(f)
+        log = {
+            "timestamp": ts,
+            "state": state
+        }
+        data["data"].append(log)
+        data["entries"] = len(data["data"])
+        with open("data.json", "w") as f:
+            json.dump(data, f, indent=4)
+
+        print("[*] LOG " + str(ts) + " OK: " + log)
+        return { "response": "ok", "log": state, "timestamp": ts }
+
+    except:
+        print("[X] LOG " + str(ts) + " ERROR")
+        return { "response": "error", "log": state, "timestamp": ts }
+
+# --------------------------------------------------------
+# CLASS AND FUNCTION INITIALISATION
+# --------------------------------------------------------
+
 lamp = Lamp()
 lamp.changeState()
+conn = sql_connection("data.db")
 
-# Flask web routes
+# --------------------------------------------------------
+# ROUTES
+# --------------------------------------------------------
+
+# --------------------------------------------------------
+# INTERFACE
+# --------------------------------------------------------
+
 # Change lamp state dynamically
 @app.route('/')
 def web_changeState():
@@ -97,25 +128,33 @@ def web_readState():
     else:
         return "Lamp is currently OFF"
 
+# --------------------------------------------------------
+# API ROUTES
+# --------------------------------------------------------
+
+# Return database data
 @app.route('/api/data')
 def api_data():
+    # REPLACE WITH SQL DATA
     with open("data.json", "r") as f:
         data = json.load(f)
 
     return data
 
+# Return current state in log format
 @app.route("/api/state")
 def api_state():
     res = lamp.readState()
 
     return res
-
+# Toggle state and return log format
 @app.route("/api/toggle")
 def api_toggle():
     res = lamp.changeState()
 
     return res
 
+# Generate time graph
 @app.route("/api/plt")
 def api_plt():
 
@@ -181,7 +220,7 @@ def api_plt():
         i += 1
 
     if len(x) == 0 or len(y) == 0:
-        print("400: Empty plot " + str(day) + "/" + str(month))
+        print("[X] ERROR 400: Empty plot " + str(day) + "/" + str(month))
         return {"status": 400, "message": "Empty plot", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
 
     plt.xlim(0, 24)
@@ -195,28 +234,39 @@ def api_plt():
     plt.savefig("plt" + str(day) + str(month) + ".png")
     plt.close()
 
-    print("ok: Generated plot " + str(day) + "/" + str(month))
+    print("[*] PLOT GENERATED" + str(day) + "/" + str(month))
     return {"status": "ok", "message": "Plot saved", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
 
+# Return time graph
 @app.route("/api/plt/img")
 def api_plt_img():
     day = request.args.get("day")
     month = request.args.get("month")
 
     if (not day) or (not month):
+        print("[X] Received invalid request")
         return {"status": 404, "message": "Invalid request"}
 
     try:
         day = int(day)
         month = int(month)
     except:
+        print("[X] Received invalid request")
         return {"status": 404, "message": "Invalid request"}
 
     return send_file("plt" + str(day) + str(month) + ".png")
+
+# --------------------------------------------------------
+# ATEXIT
+# --------------------------------------------------------
 
 # Run function on exit
 def exit_handler():
     logState(False)
     GPIO.cleanup()
-    print("Successfully shut down")
+    print("[*] Successfully shut down")
+    conn.close()
+    print("[*] Closed SQL connection")
+    print("[*] Cleanup successful")
+    print("[*] Exiting...")
 atexit.register(exit_handler)
