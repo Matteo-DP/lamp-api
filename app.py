@@ -33,8 +33,10 @@ GPIO.setup(relay_pin, GPIO.OUT)
 
 class Lamp():
     def __init__(self):
-        self.isOn = False
-        self.latestLog = {}
+        self.isOn = True
+        self.latestLog = {"log": True, "timestamp": datetime.datetime.now().timestamp()}
+
+        GPIO.output(relay_pin, GPIO.HIGH)
 
     def changeState(self):
 
@@ -71,28 +73,17 @@ def sql_connection(file):
         return None
 
 def logState(state, latestLog):
-    #try:
     ts = datetime.datetime.now().timestamp()
 
-    # with open("data.json", "r") as f:
-    #     data = json.load(f)
-    #log = {
-    #    "timestamp": ts,
-    #    "state": state
-    #}
-    # data["data"].append(log)
-    # data["entries"] = len(data["data"])
-    # with open("data.json", "w") as f:
-    #     json.dump(data, f, indent=4)
-
-    # SQL TABLE TIMES
-    # start_time TEXT | end_time TEXT | delta REAL |
-
-    try:
+    try: # TODO: check if error handling is unnecessary since the startup log error fix
         if latestLog["log"]:
             start = datetime.datetime.fromtimestamp(latestLog["timestamp"])
             end = datetime.datetime.now()
             delta = end - start
+            # SQL TABLE TIMES
+            # start_time BLOB | end_time BLOB | delta REAL | 
+            # TODO: change BLOB to TEXT format
+            # Note: !! SQL query values in quotation marks for str
             query='''
                 INSERT INTO times (start_time, end_time, delta)
                 VALUES ('{start}', '{end}', {delta})
@@ -101,23 +92,17 @@ def logState(state, latestLog):
             conn.commit()
             print(f"[*] LOG SAVED TO TABLE TIMES: {start} - {end} ({delta})")
     except Exception as e:
-        print("[X ERROR IN LOG:")
+        print("[X] ERROR IN LOG:")
         print(e)
 
     print("[*] LOG " + str(ts) + " GENERATED: state " + str(state))
     return { "response": "ok", "log": state, "timestamp": ts }
-
-    #except:
-    #    print("[X] LOG " + str(ts) + " ERROR")
-    #    return { "response": "error", "log": state, "timestamp": ts }
 
 # --------------------------------------------------------
 # CLASS AND FUNCTION INITIALISATION
 # --------------------------------------------------------
 
 lamp = Lamp()
-if not lamp.readState()["state"]:
-    lamp.changeState()
 conn = sql_connection("data.db")
 
 # --------------------------------------------------------
@@ -177,7 +162,6 @@ def api_toggle():
 # Generate time graph
 @app.route("/api/plt")
 def api_plt():
-
     start_time = datetime.datetime.now()
 
     day = request.args.get("day")
@@ -185,63 +169,57 @@ def api_plt():
 
     if (not day) or (not month):
         return {"status": 404, "message": "Invalid request"}
-
     try:
         day = int(day)
         month = int(month)
     except:
         return {"status": 404, "message": "Invalid request"}
 
-    with open("data.json", "r") as file:
-        data = json.load(file)
-
-    startTimes = []
-    endTimes = []
+    # Select all rows where start time contains M-D in any position
+    dateQuery = f'{month}-{day}'
+    query = '''
+        SELECT * FROM times
+        WHERE start_time LIKE '%{date}%'
+        '''.format(date=dateQuery)
+    results = conn.execute(query)
+    results = results.fetchall()
+    
     y = []
     x = []
 
-    for element in data["data"]:
-        date = datetime.datetime.fromtimestamp(element["timestamp"])
-        if date.day == day and date.month == month:
-            if element["state"]:
-                startTimes.append(date)
+    # Map each row's delta time to their according hour
+    # Check if the hour is already in the x list
+    # If it is --> Add delta to the corresponding value in the y list if the sum of the delta and the y value < 60
+    # Check if remaining delta is > 60
+    # Loop over appending 60 until delta < 60
+    # Append remaining delta
+    for row in results:
+        date = datetime.datetime.fromisoformat(row[0])
+        hour = date.hour + 1
+        delta = row[2] / 60 # Convert seconds to minutes
+
+        if hour in x:
+            # Check if sum of delta in list and current delta > 60
+            index = x.index(hour)
+            yvalue = y[index] # Current y value
+            if yvalue + delta > 60: # Check if sum of current y value and delta > 60
+                y[index] += delta - yvalue - 60 # Add the delta - current y value - 60
+                delta -= 60 + yvalue # Update remaining delta
+                # Is the remaining delta > 60? If so --> has to be last item in list
             else:
-                endTimes.append(date)
+                y[index] += delta # Add the delta
+                delta = 0 # Set it to 0 so it doesnt get added again
+        i = 0
+        while delta > 60: # Distribute minutes with max 60
+            x.append(hour + i) # Add hour to x values
+            y.append(60) # Add 60 to y values
+            i += 1 # Increase loop #
+            delta -= 60 # Update delta
 
-    i = 0
-    while i < len(startTimes):
-        time1 = startTimes[i]
-        if i < len(endTimes):
-            time2 = endTimes[i]
-        else:
-            time2 = datetime.datetime.now()
-
-        deltaTime = time2 - time1
-        deltaSeconds = deltaTime.total_seconds()
-        deltaMinutes = deltaSeconds / 60
-
-        if deltaMinutes > 60:
-            a = 0
-            while deltaMinutes > 0:
-                if not time1.hour + a > 24:
-                    x.append(time1.hour + a)
-                    if deltaMinutes < 60:
-                        y.append(deltaMinutes)
-                    else:
-                        y.append(60)
-
-                    deltaMinutes = deltaMinutes - 60
-                    a += 1
-                else:
-                    deltaMinutes = 0
-        else:
-            x.append(time1.hour)
-            y.append(deltaMinutes)
-        i += 1
-
-    if len(x) == 0 or len(y) == 0:
-        print("[X] ERROR 400: Empty plot " + str(day) + "/" + str(month))
-        return {"status": 400, "message": "Empty plot", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
+        # Append remaining delta if it exists
+        if not delta == 0:
+            x.append(hour + i)
+            y.append(delta)
 
     plt.xlim(0, 24)
     plt.ylim(0, 60)
@@ -254,8 +232,9 @@ def api_plt():
     plt.savefig("plt" + str(day) + str(month) + ".png")
     plt.close()
 
-    print("[*] PLOT GENERATED" + str(day) + "/" + str(month))
-    return {"status": "ok", "message": "Plot saved", "day": day, "month": month, "execution": (datetime.datetime.now() - start_time).total_seconds()}
+    execution_time = (datetime.datetime.now() - start_time).total_seconds()
+    print(f"[*] PLOT {str(day)}/{str(month)} GENERATED IN {execution_time}s")
+    return {"status": "ok", "message": "Plot saved", "day": day, "month": month, "execution": execution_time}
 
 # Return time graph
 @app.route("/api/plt/img")
@@ -264,14 +243,14 @@ def api_plt_img():
     month = request.args.get("month")
 
     if (not day) or (not month):
-        print("[X] Received invalid request")
+        print("[X] Received invalid request: missing query strings")
         return {"status": 404, "message": "Invalid request"}
 
     try:
         day = int(day)
         month = int(month)
     except:
-        print("[X] Received invalid request")
+        print("[X] Received invalid request: TypeError for query strings")
         return {"status": 404, "message": "Invalid request"}
 
     return send_file("plt" + str(day) + str(month) + ".png")
@@ -284,9 +263,8 @@ def api_plt_img():
 def exit_handler():
     logState(False, lamp.latestLog)
     GPIO.cleanup()
-    print("[*] Successfully shut down")
+    print("[*] Cleaned up GPIO")
     conn.close()
     print("[*] Closed SQL connection")
-    print("[*] Cleanup successful")
     print("[*] Exiting...")
 atexit.register(exit_handler)
