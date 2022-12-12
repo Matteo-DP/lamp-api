@@ -1,3 +1,5 @@
+print("[*] Starting... Please wait for MatPlotLib initialisation")
+
 from flask import Flask
 from flask import request
 from flask import send_file
@@ -37,7 +39,9 @@ class Lamp():
     def changeState(self):
 
         self.isOn = not self.isOn
-        log = logState(self.isOn)
+        # Generate and save log if necessary
+        log = logState(self.isOn, self.latestLog)
+        # Change latest log AFTER save log expression
         self.latestLog = log
 
         if self.isOn == True:
@@ -57,47 +61,63 @@ class Lamp():
         return { "state": stateBool, "log": self.latestLog }
 
 def sql_connection(file): 
-    # Create an SQLITE persistent connection
-    conn = None
+    # Create SQLITE persistent connection
     try:
-        conn = sqlite3.connect(file)
+        conn = sqlite3.connect(file, check_same_thread=False)
         print("[*] SQLITE Connection established -- " + sqlite3.version)
+        return conn
     except Error as e:
         print(e)
+        return None
 
-    return conn
+def logState(state, latestLog):
+    #try:
+    ts = datetime.datetime.now().timestamp()
 
-def logState(state):
-        # REPLACE WITH SQL DATABASE
-        # | ON        | OFF       |
-        # | timestamp | timestamp |
-        # |-----------|-----------|
+    # with open("data.json", "r") as f:
+    #     data = json.load(f)
+    #log = {
+    #    "timestamp": ts,
+    #    "state": state
+    #}
+    # data["data"].append(log)
+    # data["entries"] = len(data["data"])
+    # with open("data.json", "w") as f:
+    #     json.dump(data, f, indent=4)
+
+    # SQL TABLE TIMES
+    # start_time TEXT | end_time TEXT | delta REAL |
+
     try:
-        ts = datetime.datetime.now().timestamp()
-        with open("data.json", "r") as f:
-            data = json.load(f)
-        log = {
-            "timestamp": ts,
-            "state": state
-        }
-        data["data"].append(log)
-        data["entries"] = len(data["data"])
-        with open("data.json", "w") as f:
-            json.dump(data, f, indent=4)
+        if latestLog["log"]:
+            start = datetime.datetime.fromtimestamp(latestLog["timestamp"])
+            end = datetime.datetime.now()
+            delta = end - start
+            query='''
+                INSERT INTO times (start_time, end_time, delta)
+                VALUES ('{start}', '{end}', {delta})
+            '''.format(start=str(start.isoformat()), end=str(end.isoformat()), delta=delta.total_seconds())
+            conn.execute(query)
+            conn.commit()
+            print(f"[*] LOG SAVED TO TABLE TIMES: {start} - {end} ({delta})")
+    except Exception as e:
+        print("[X ERROR IN LOG:")
+        print(e)
 
-        print("[*] LOG " + str(ts) + " OK: " + log)
-        return { "response": "ok", "log": state, "timestamp": ts }
+    print("[*] LOG " + str(ts) + " GENERATED: state " + str(state))
+    return { "response": "ok", "log": state, "timestamp": ts }
 
-    except:
-        print("[X] LOG " + str(ts) + " ERROR")
-        return { "response": "error", "log": state, "timestamp": ts }
+    #except:
+    #    print("[X] LOG " + str(ts) + " ERROR")
+    #    return { "response": "error", "log": state, "timestamp": ts }
 
 # --------------------------------------------------------
 # CLASS AND FUNCTION INITIALISATION
 # --------------------------------------------------------
 
 lamp = Lamp()
-lamp.changeState()
+if not lamp.readState()["state"]:
+    lamp.changeState()
 conn = sql_connection("data.db")
 
 # --------------------------------------------------------
@@ -262,7 +282,7 @@ def api_plt_img():
 
 # Run function on exit
 def exit_handler():
-    logState(False)
+    logState(False, lamp.latestLog)
     GPIO.cleanup()
     print("[*] Successfully shut down")
     conn.close()
