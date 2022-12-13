@@ -140,9 +140,12 @@ def web_readState():
 # Return database data
 @app.route('/api/data')
 def api_data():
-    # REPLACE WITH SQL DATA
-    with open("data.json", "r") as f:
-        data = json.load(f)
+
+    query = '''
+        SELECT * FROM times
+    '''
+    data = conn.execute(query)
+    data = data.fetchall()
 
     return data
 
