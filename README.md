@@ -13,3 +13,4 @@ flask run --host:0.0.0.0
 /api/toggle | Toggles lights, returns state in log format
 /api/plt | Generates time plot with month & day query params, returns status in log format
 /api/plt/img | Returns the specified plot with month & day query params
+/api/graphdata | Returns time dataset with month & day query params, Rechart readable format
