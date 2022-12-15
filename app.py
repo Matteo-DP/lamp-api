@@ -10,7 +10,8 @@ import RPi.GPIO as GPIO
 import matplotlib.pyplot as plt
 import datetime
 import atexit
-import json
+
+
 
 # --------------------------------------------------------
 # INITIALISATION
@@ -26,6 +27,8 @@ relay_pin = 24
 GPIO.setmode(GPIO.BCM)
 # Set the pin mode to output
 GPIO.setup(relay_pin, GPIO.OUT)
+
+
 
 # --------------------------------------------------------
 # LAMP CLASS
@@ -62,6 +65,7 @@ class Lamp():
             stateBool = False
         return { "state": stateBool, "log": self.latestLog }
 
+
 def sql_connection(file): 
     # Create SQLITE persistent connection
     try:
@@ -71,6 +75,7 @@ def sql_connection(file):
     except Error as e:
         print(e)
         return None
+
 
 def logState(state, latestLog):
     ts = datetime.datetime.now().timestamp()
@@ -98,6 +103,8 @@ def logState(state, latestLog):
     print("[*] LOG " + str(ts) + " GENERATED: state " + str(state))
     return { "response": "ok", "log": state, "timestamp": ts }
 
+
+
 # --------------------------------------------------------
 # CLASS AND FUNCTION INITIALISATION
 # --------------------------------------------------------
@@ -105,9 +112,58 @@ def logState(state, latestLog):
 lamp = Lamp()
 conn = sql_connection("data.db")
 
+
+
+# --------------------------------------------------------
+# GRAPH GENERATION ALGORITHM
+# --------------------------------------------------------
+
+def generateAxis(sql_results):
+    x = []
+    y = []
+     # Map each row's delta time to their according hour
+    # Check if the hour is already in the x list
+    # If it is --> Add delta to the corresponding value in the y list if the sum of the delta and the y value < 60
+    # Check if remaining delta is > 60
+    # Loop over appending 60 until delta < 60
+    # Append remaining delta
+    for row in sql_results:
+        date = datetime.datetime.fromisoformat(row[0])
+        hour = date.hour + 1
+        delta = row[2] / 60 # Convert seconds to minutes
+
+        if hour in x:
+            # Check if sum of delta in list and current delta > 60
+            index = x.index(hour)
+            yvalue = y[index] # Current y value
+            if yvalue + delta > 60: # Check if sum of current y value and delta > 60
+                y[index] += 60 - yvalue # Add the delta - current y value - 60
+                delta = delta - 60 + yvalue # Update remaining delta
+                # Is the remaining delta > 60? If so --> has to be last item in list
+            else:
+                y[index] += delta # Add the delta
+                delta = 0 # Set it to 0 so it doesnt get added again
+        i = 0
+        while delta > 60: # Distribute minutes with max 60
+            x.append(hour + i) # Add hour to x values
+            y.append(60) # Add 60 to y values
+            i += 1 # Increase loop #
+            delta -= 60 # Update delta
+
+        # Append remaining delta if it exists
+        if delta > 0:
+            x.append(hour + i)
+            y.append(delta)
+
+    return x, y
+
+
+
 # --------------------------------------------------------
 # ROUTES
 # --------------------------------------------------------
+
+
 
 # --------------------------------------------------------
 # INTERFACE
@@ -123,6 +179,7 @@ def web_changeState():
     else:
         return "Lamp has been turned OFF"
 
+
 # Read lamp state
 @app.route('/state')
 def web_readState():
@@ -133,9 +190,63 @@ def web_readState():
     else:
         return "Lamp is currently OFF"
 
+
+
 # --------------------------------------------------------
 # API ROUTES
 # --------------------------------------------------------
+
+
+# Return graph data in a format that Recharts in frontend can read
+@app.route("/api/graphdata")
+def api_graphdata():
+    start_time = datetime.datetime.now()
+
+    day = request.args.get("day")
+    month = request.args.get("month")
+
+    if (not day) or (not month):
+        return {"status": 404, "message": "Invalid request"}
+    try:
+        day = int(day)
+        month = int(month)
+    except:
+        return {"status": 404, "message": "Invalid request"}
+
+    # Select all rows where start time contains M-D in any position
+    dateQuery = f'{month}-{day}'
+    query = '''
+        SELECT * FROM times
+        WHERE start_time LIKE '%{date}%'
+        '''.format(date=dateQuery)
+    results = conn.execute(query)
+    results = results.fetchall()
+    
+    x, y = generateAxis(results)
+
+    i = 0
+    data = []
+    while i < 24:
+        
+        data.append({ "hour": i + 1 })
+        if i + 1 in x:
+            index = x.index(i + 1)
+            data[i]["minutes"] = y[index]
+        else:
+            data[i]["minutes"] = 0
+        i += 1
+
+    execution_time = (datetime.datetime.now() - start_time).total_seconds()
+    
+    response = {
+        "execution": execution_time,
+        "data": data,
+        "entries": len(y) + 1,
+        "total_minutes": sum(y)
+    }
+
+    return response
+
 
 # Return database data
 @app.route('/api/data')
@@ -147,7 +258,12 @@ def api_data():
     data = conn.execute(query)
     data = data.fetchall()
 
-    return data
+    string = ""
+    for row in data:
+        string = string + str(row) + "\n"
+    
+    return string
+
 
 # Return current state in log format
 @app.route("/api/state")
@@ -155,12 +271,15 @@ def api_state():
     res = lamp.readState()
 
     return res
+
+
 # Toggle state and return log format
 @app.route("/api/toggle")
 def api_toggle():
     res = lamp.changeState()
 
     return res
+
 
 # Generate time graph
 @app.route("/api/plt")
@@ -187,42 +306,7 @@ def api_plt():
     results = conn.execute(query)
     results = results.fetchall()
     
-    y = []
-    x = []
-
-    # Map each row's delta time to their according hour
-    # Check if the hour is already in the x list
-    # If it is --> Add delta to the corresponding value in the y list if the sum of the delta and the y value < 60
-    # Check if remaining delta is > 60
-    # Loop over appending 60 until delta < 60
-    # Append remaining delta
-    for row in results:
-        date = datetime.datetime.fromisoformat(row[0])
-        hour = date.hour + 1
-        delta = row[2] / 60 # Convert seconds to minutes
-
-        if hour in x:
-            # Check if sum of delta in list and current delta > 60
-            index = x.index(hour)
-            yvalue = y[index] # Current y value
-            if yvalue + delta > 60: # Check if sum of current y value and delta > 60
-                y[index] += delta - yvalue - 60 # Add the delta - current y value - 60
-                delta -= 60 + yvalue # Update remaining delta
-                # Is the remaining delta > 60? If so --> has to be last item in list
-            else:
-                y[index] += delta # Add the delta
-                delta = 0 # Set it to 0 so it doesnt get added again
-        i = 0
-        while delta > 60: # Distribute minutes with max 60
-            x.append(hour + i) # Add hour to x values
-            y.append(60) # Add 60 to y values
-            i += 1 # Increase loop #
-            delta -= 60 # Update delta
-
-        # Append remaining delta if it exists
-        if not delta == 0:
-            x.append(hour + i)
-            y.append(delta)
+    x, y = generateAxis(results)
 
     plt.xlim(0, 24)
     plt.ylim(0, 60)
@@ -238,6 +322,7 @@ def api_plt():
     execution_time = (datetime.datetime.now() - start_time).total_seconds()
     print(f"[*] PLOT {str(day)}/{str(month)} GENERATED IN {execution_time}s")
     return {"status": "ok", "message": "Plot saved", "day": day, "month": month, "execution": execution_time}
+
 
 # Return time graph
 @app.route("/api/plt/img")
@@ -258,9 +343,12 @@ def api_plt_img():
 
     return send_file("plt" + str(day) + str(month) + ".png")
 
+
+
 # --------------------------------------------------------
 # ATEXIT
 # --------------------------------------------------------
+
 
 # Run function on exit
 def exit_handler():
