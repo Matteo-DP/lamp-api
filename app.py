@@ -1,4 +1,4 @@
-print("[*] Starting... Please wait for MatPlotLib initialisation")
+print("[*] Starting...")
 
 from flask import Flask
 from flask import request
@@ -118,6 +118,7 @@ conn = sql_connection("data.db")
 # GRAPH GENERATION ALGORITHM
 # --------------------------------------------------------
 
+# Deprecated, inefficient algorithm I created :(
 def generateAxis(sql_results):
     x = []
     y = []
@@ -158,6 +159,61 @@ def generateAxis(sql_results):
     return x, y
 
 
+# ChatGPT generated algorithm
+# TODO: KNOWN ISSUES:
+# - Minutes may exceed 60
+# - Time too short?
+def generateAxisBeta(sql_results): # Expected datatype is a tuple containing deltas and on off times
+    x = []
+    y = []
+
+    # Initialize dictionary with 24 keys, representing the hours of the day
+    hours = {i: 0 for i in range(24)}
+
+    # Iterate over the rows in the sql_results and extract the date and delta time
+    for row in sql_results:
+        date = datetime.datetime.fromisoformat(row[0])
+        hour = date.hour
+        delta = row[2] / 60  # Convert seconds to minutes
+
+        # Calculate the number of full hours and remaining minutes
+        full_hours, remaining_minutes = divmod(delta, 60) # No clue what this does but it works for some reason
+
+        # Add the full hours to the dictionary key for the current hour
+        hours[hour] += full_hours
+
+        # If there are remaining minutes, add them to the dictionary key for the next hour
+        if remaining_minutes > 0:
+            hours[(hour + 1) % 24] += remaining_minutes
+
+    # Extract the x and y values from the dictionary
+    x = list(hours.keys())
+    y = list(hours.values())
+
+    return x, y
+
+
+# Generate monthly average usage time
+def generateAverageUsage(sql_results): # Expected datatype is a list of tuples containing deltas anbd on off times for the corresponding month
+    # Filter tuple per day
+    dates_dict = {}
+    for row in sql_results:
+        date = datetime.datetime.fromisoformat(row[0])
+        day = date.day
+        if not str(day) in dates_dict.keys():
+            dates_dict[str(day)] = [row]
+        else:
+            dates_dict[str(day)].append(row)
+
+    # Generate graphing data for each day in the dates_dict and sum the total hours in total_hours_dict
+    total_hours_dict = {i: 0 for i in range(32)} # Initialise dict with 31 days
+    for day in dates_dict:
+        x, y = generateAxis(dates_dict[day])
+        total_hours = sum(y) / 60 # Convert minutes to hours
+        total_hours_dict[int(day)] = total_hours
+
+    return total_hours_dict
+
 
 # --------------------------------------------------------
 # ROUTES
@@ -197,6 +253,62 @@ def web_readState():
 # --------------------------------------------------------
 
 
+# Return graph data which contains usage time per day for the month and the average usage time
+# TODO: KNOWN ISSUES:
+# - Check whether month is 30 or 31 days long for more accurate graphing. Current algorithm assumes 31 days
+@app.route("/api/monthly")
+def api_monthly():
+    start_time = datetime.datetime.now()
+
+    month = request.args.get("month")
+    if (not month):
+        return {"status": 404, "message": "Invalid request"}
+    try:
+        month = int(month)
+    except:
+        return {"status": 404, "message": "Invalid request"}
+
+    # Select all rows where the month corresponds to the inputted month: wrap month in -month- to make sure it doesnt interpret the month number as a day
+    dateQuery = f'{month}'
+    query = '''
+        SELECT * FROM times
+        WHERE start_time LIKE '%-{date}-%'
+        '''.format(date=dateQuery)
+    results = conn.execute(query)
+    results = results.fetchall()
+
+    total_hours_dict = generateAverageUsage(results)
+
+    execution_time = (datetime.datetime.now() - start_time).total_seconds() # Calculate execution time
+    total_hours = 0 # Calculate total hours
+    entries = 0 # Calculate number of non-zero entries
+    for day in total_hours_dict:
+        total_hours += total_hours_dict[day]
+        if total_hours_dict[day] > 0: # If it is a non zero value, increase the entry number by 1
+            entries += 1
+
+    if entries > 0: # Prevent division by 0 error on empty dict
+        average_hours = total_hours / entries
+    else:
+        average_hours = 0
+
+    # Convert total_hours_dict lists to a recharts graphable dataset
+    # TODO: this is unnecessarily complicated. Fix the generateAverageUsage() function to generate the correct data format instead
+    data = []
+    for day in total_hours_dict:
+        data.append({"day": day, "hours": total_hours_dict[day]})
+
+    response = {
+        "execution": execution_time,
+        "entries": entries,
+        "total_hours": total_hours,
+        "average_hours": average_hours,
+        "data": data
+    }
+
+    return response
+
+
 # Return graph data in a format that Recharts in frontend can read
 @app.route("/api/graphdata")
 def api_graphdata():
@@ -224,6 +336,8 @@ def api_graphdata():
     
     x, y = generateAxis(results)
 
+    # Convert x and y lists to dict
+    # TODO: this is useless since it is converted from dict to x and y lists in the generateAxis function
     i = 0
     data = []
     while i < 24:
@@ -248,7 +362,7 @@ def api_graphdata():
     return response
 
 
-# Return database data
+# Return all database data
 @app.route('/api/data')
 def api_data():
 
