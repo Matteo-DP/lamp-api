@@ -1,5 +1,5 @@
 ## Lamp control API
-
+Python flask API which controls a relay on a RPI B+
 flask run --host:0.0.0.0
 
 ### Routes:
