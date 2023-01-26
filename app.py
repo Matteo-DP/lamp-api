@@ -225,6 +225,14 @@ def generateAverageUsage(sql_results): # Expected datatype is a list of tuples c
 # INTERFACE
 # --------------------------------------------------------
 
+# Check for auth header
+@app.before_request
+def check_auth():
+    headers = request.headers
+    auth = headers.get("X-Api-Key")
+    if auth != "e449fe3f71b1798b51152597f06a80b0a06":
+        return {"status": 400, "message": "Invalid api key"}
+
 # Change lamp state dynamically
 @app.route('/')
 def web_changeState():
